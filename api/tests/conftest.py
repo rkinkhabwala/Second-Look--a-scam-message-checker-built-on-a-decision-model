@@ -3,7 +3,7 @@ import respx
 
 
 @pytest.fixture(autouse=True)
-def _no_real_network():
+def respx_router():
     """Fail any HTTP request a test didn't explicitly mock. Tests never call the real API."""
     with respx.mock(assert_all_called=False, assert_all_mocked=True) as router:
         yield router
