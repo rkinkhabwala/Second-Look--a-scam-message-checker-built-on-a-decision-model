@@ -39,6 +39,7 @@ class Settings:
     jev_max_retries: int = 3
     jev_max_request_tokens: int = 64_000
     jev_max_state_tokens: int = 32_000  # state + longest question
+    jev_price_per_mtok_usd: float = 0.042  # input tokens only; output is free (docs.typesafe.ai/models.md)
 
     # Storage
     db_url: str = field(default_factory=lambda: f"sqlite:///{API_ROOT / 'second_look.db'}")
