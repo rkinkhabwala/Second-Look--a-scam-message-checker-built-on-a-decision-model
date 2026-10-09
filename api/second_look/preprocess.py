@@ -237,6 +237,20 @@ def truncate_middle(text: str, max_tokens: int) -> tuple[str, bool]:
     return f"{head}\n[… {removed} characters removed …]\n{tail}", True
 
 
+def state_token_budget(
+    questions_json: dict, max_state_tokens: int = 32_000, max_request_tokens: int = 64_000
+) -> int:
+    """Largest state Jev accepts with these questions.
+
+    Jev limits: 64K tokens per request; 32K for state + the longest question.
+    """
+    longest_q = max((estimate_tokens(q) for q in questions_json.values()), default=0)
+    margin = 256  # request envelope, model id, JSON punctuation
+    return min(
+        max_state_tokens - longest_q, max_request_tokens - estimate_tokens(questions_json)
+    ) - margin
+
+
 # ----------------------------------------------------------------------- state
 
 

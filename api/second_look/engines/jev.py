@@ -15,7 +15,7 @@ import httpx
 
 from second_look.config import Settings
 from second_look.engines.base import Answer, Choice, EngineError, EngineUnavailable, Noul, Score
-from second_look.preprocess import estimate_tokens, truncate_middle
+from second_look.preprocess import estimate_tokens, state_token_budget, truncate_middle
 
 RETRY_STATUSES = frozenset({408, 429})  # plus every 5xx (529 = Overloaded)
 MAX_RETRY_AFTER_S = 10.0
@@ -110,14 +110,12 @@ class JevEngine:
 
     # ---------------------------------------------------------------- limits
 
+    def state_budget(self, q_json: dict) -> int:
+        return state_token_budget(q_json, self.max_state_tokens, self.max_request_tokens)
+
     def _fit_state(self, state: str | dict, q_json: dict) -> tuple[str | dict, bool]:
         """Jev limits: 64K tokens per request; 32K for state + the longest question."""
-        longest_q = max((estimate_tokens(q) for q in q_json.values()), default=0)
-        all_q = estimate_tokens(q_json)
-        margin = 256  # request envelope, model id, JSON punctuation
-        budget = min(
-            self.max_state_tokens - longest_q, self.max_request_tokens - all_q
-        ) - margin
+        budget = self.state_budget(q_json)
         if estimate_tokens(state) <= budget:
             return state, False
         if isinstance(state, str):
