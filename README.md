@@ -25,3 +25,16 @@ uv run pytest
 ```
 
 Tests never call the real Jev API; HTTP is mocked with respx and any unmocked request fails.
+
+### Evaluation
+
+```bash
+cd api
+uv run python -m second_look.eval.download sms                       # UCI SMS Spam Collection -> eval/data (gitignored)
+uv run --env-file ../.env python -m second_look.eval.run --engine jev --dataset sms --dry-run   # request count + cost, no calls
+uv run --env-file ../.env python -m second_look.eval.run --engine jev --dataset sms --limit 50  # small trial
+uv run --env-file ../.env python -m second_look.eval.run --engine jev --dataset sms             # full test split
+```
+
+Results (metrics JSON, per-message predictions without text, reliability and coverage PNGs) go to
+`api/second_look/eval/results/`. Responses are cached in `eval/cache/` by request hash, so reruns are free.
