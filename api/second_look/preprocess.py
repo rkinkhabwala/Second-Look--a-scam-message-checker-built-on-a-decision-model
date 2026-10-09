@@ -145,17 +145,13 @@ def _digits(s: str) -> str:
     return re.sub(r"\D", "", s)
 
 
-def extract_phone_numbers(text: str) -> list[str]:
-    """Phone numbers normalized to +<digits> (E.164-like) or bare short codes."""
-    out: list[str] = []
-    taken: list[tuple[int, int]] = []
+def phone_matches(text: str) -> list[tuple[str, tuple[int, int], bool]]:
+    """(normalized number, span, is_short_code) for every phone number, in match order."""
+    found: list[tuple[str, tuple[int, int], bool]] = []
 
-    def add(value: str, span: tuple[int, int]) -> None:
-        if any(span[0] < e and s < span[1] for s, e in taken):
-            return
-        taken.append(span)
-        if value not in out:
-            out.append(value)
+    def add(value: str, span: tuple[int, int], short: bool = False) -> None:
+        if not any(span[0] < e and s < span[1] for _, (s, e), _ in found):
+            found.append((value, span, short))
 
     for m in _PHONE_INTL.finditer(text):
         d = _digits(m.group(0))
@@ -168,8 +164,13 @@ def extract_phone_numbers(text: str) -> list[str]:
         d = d[1:] if len(d) == 11 else d
         add("+1" + d, m.span())
     for m in _SHORT_CODE.finditer(text):
-        add(m.group(1), m.span(1))
-    return out
+        add(m.group(1), m.span(1), short=True)
+    return found
+
+
+def extract_phone_numbers(text: str) -> list[str]:
+    """Phone numbers normalized to +<digits> (E.164-like) or bare short codes."""
+    return list(dict.fromkeys(value for value, _, _ in phone_matches(text)))
 
 
 # --------------------------------------------------------------------- amounts

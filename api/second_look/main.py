@@ -7,6 +7,7 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from second_look.config import Settings, get_settings
@@ -15,6 +16,7 @@ from second_look.engines.jev import JevEngine
 from second_look.engines.registry import DEFAULT_ENGINE, EngineProvider, UnknownEngine
 from second_look.preprocess import Channel, build_state, state_token_budget
 from second_look.questions import QUESTIONS
+from second_look.storage import Storage, TrueLabel
 from second_look.verdict import Verdict, make_verdict
 
 log = logging.getLogger("second_look")
@@ -37,14 +39,25 @@ class CheckRequest(BaseModel):
 
 
 class CheckResponse(Verdict):
+    check_id: int
     engine: str
     latency_ms: float
     truncated: bool
 
 
-def create_app(settings: Settings | None = None, provider: EngineProvider | None = None) -> FastAPI:
+class FeedbackRequest(BaseModel):
+    correct: bool
+    true_label: TrueLabel | None = None  # "this was actually safe / a scam"
+
+
+def create_app(
+    settings: Settings | None = None,
+    provider: EngineProvider | None = None,
+    storage: Storage | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
     provider = provider or EngineProvider(settings)
+    storage = storage or Storage(settings.db_url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -54,6 +67,7 @@ def create_app(settings: Settings | None = None, provider: EngineProvider | None
     app = FastAPI(title="Second Look", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
     app.state.provider = provider
+    app.state.storage = storage
 
     def get_provider(request: Request) -> EngineProvider:
         return request.app.state.provider
@@ -100,12 +114,33 @@ def create_app(settings: Settings | None = None, provider: EngineProvider | None
         latency_ms = (time.perf_counter() - start) * 1000
 
         v = make_verdict(answers, settings)
+        truncated = meta.truncated or engine_truncated
+        check_id = await run_in_threadpool(
+            storage.log_check,
+            verdict=v.verdict.value,
+            engine=engine.name,
+            latency_ms=latency_ms,
+            truncated=truncated,
+            help_improve=req.help_improve,
+            text=req.text,
+            probability=v.probability,
+            scam_type=v.scam_type,
+            channel=req.channel,
+        )
         return CheckResponse(
             **v.model_dump(),
+            check_id=check_id,
             engine=engine.name,
             latency_ms=round(latency_ms, 1),
-            truncated=meta.truncated or engine_truncated,
+            truncated=truncated,
         )
+
+    @app.post("/api/checks/{check_id}/feedback", status_code=201)
+    def feedback(check_id: int, req: FeedbackRequest) -> dict:
+        fb = storage.add_feedback(check_id, req.correct, req.true_label)
+        if fb is None:
+            raise HTTPException(404, "We couldn't find that check.")
+        return {"id": fb.id, "check_id": check_id, "correct": fb.correct, "true_label": fb.true_label}
 
     return app
 

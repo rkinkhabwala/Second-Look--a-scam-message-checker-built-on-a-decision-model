@@ -10,6 +10,7 @@ from second_look.engines.fake import FakeEngine
 from second_look.engines.registry import EngineProvider
 from second_look.main import ENGINE_FAILED_MESSAGE, NO_ENGINE_MESSAGE, create_app
 from second_look.questions import QUESTIONS
+from second_look.storage import Storage
 from tests.test_jev import jev_body
 from tests.test_verdict import answers
 
@@ -20,8 +21,12 @@ class FakeProvider(EngineProvider):
         self._engines = {"jev": engine}
 
 
+def make_app(settings=Settings(), provider=None):
+    return create_app(settings, provider, Storage("sqlite://"))
+
+
 def client_with(engine) -> TestClient:
-    return TestClient(create_app(Settings(), FakeProvider(engine)))
+    return TestClient(make_app(provider=FakeProvider(engine)))
 
 
 SCAM = "E-ZPass: unpaid toll of $4.15. Pay today at https://ezpass.toll-pay.top or face a $50 fine."
@@ -54,7 +59,7 @@ def test_check_long_message_reports_truncation():
 
 
 def test_no_api_key_returns_clear_503():
-    c = TestClient(create_app(Settings(typesafe_api_key=None)))
+    c = TestClient(make_app(Settings(typesafe_api_key=None)))
     r = c.post("/api/check", json={"text": SCAM})
     assert r.status_code == 503
     assert r.json()["detail"] == NO_ENGINE_MESSAGE
@@ -62,11 +67,11 @@ def test_no_api_key_returns_clear_503():
 
 
 def test_engines_endpoint_reports_readiness():
-    no_key = TestClient(create_app(Settings())).get("/api/engines").json()
+    no_key = TestClient(make_app(Settings())).get("/api/engines").json()
     assert no_key["engines"] == [
         {"name": "jev", "ready": False, "reason": "TYPESAFE_API_KEY is not set", "model": "jev-1.13.0"}
     ]
-    with_key = TestClient(create_app(Settings(typesafe_api_key="test-key-not-real"))).get("/api/engines").json()
+    with_key = TestClient(make_app(Settings(typesafe_api_key="test-key-not-real"))).get("/api/engines").json()
     assert with_key["engines"][0]["ready"] is True
     assert with_key["default"] == "jev"
 
@@ -100,7 +105,7 @@ def test_check_end_to_end_with_real_jev_engine_and_mocked_http(respx_router):
     respx_router.post("https://api.typesafe.ai/v1/systemone").mock(
         return_value=httpx.Response(200, json=jev_body())
     )
-    c = TestClient(create_app(Settings(typesafe_api_key="test-key-not-real")))
+    c = TestClient(make_app(Settings(typesafe_api_key="test-key-not-real")))
     r = c.post("/api/check", json={"text": SCAM})
     assert r.status_code == 200, r.text
     assert r.json()["engine"] == "jev"
