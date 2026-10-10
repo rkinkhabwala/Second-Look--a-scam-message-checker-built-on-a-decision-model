@@ -1,7 +1,10 @@
-# PLAN — Second Look, Phase 1 (Decision layer + Jev)
+# PLAN — Second Look
 
-Scope: spec §11 Phase 1 only. No open-source engines, calibration, OCR, or web client.
-Status: **draft, awaiting approval.** Open questions are in §4. I need answers to them before I start the steps they affect.
+- **Phase 1** (Decision layer + Jev): **done** 2026-10-10. See the Phase 1 sections below.
+- **Phase 2** (open-source engines + calibration): **draft, awaiting approval.** See [Phase 2](#phase-2--open-source-engines--calibration) at the end.
+
+# Phase 1 — Decision layer + Jev
+
 
 ---
 
@@ -220,3 +223,166 @@ The §8 `/api/check` response has no ID, but `/api/checks/{id}/feedback` needs o
 
 **Q7. `risk_level.confidence` for Jev** is Jev's own (undocumented) spread measure, not "top minus second".
 - *Proposal:* use it as-is for Jev in Phase 1, and note it for Phase 2 cross-engine comparison.
+
+---
+
+# Phase 2 — Open-source engines + calibration
+
+Scope: spec §11 Phase 2. That covers:
+- the LLM option-scoring engine (A)
+- the NLI engine (B)
+- temperature scaling
+- the phishing-email dataset
+- the hand-labelled recent-scam set
+- a three-way engine comparison and `RESULTS.md`
+
+Out of scope: the web client, OCR and Docker (Phase 3).
+
+Status: **draft, awaiting approval.** Decisions D1–D7 are in §P5.
+
+## P1. What I checked (2026-10-10)
+
+**Machine:** Apple M1 Pro, 16 GB unified memory, 622 GB free disk, no Hugging Face cache yet. Models run on the GPU via PyTorch's MPS backend. A 4B model in 16-bit takes about 8 GB, which fits next to everything else, but not with much room to spare.
+
+**Models (Hugging Face, read today):**
+
+| Use | Model | License | Weights | Notes |
+|---|---|---|---|---|
+| Engine A (recommended) | `Qwen/Qwen3-4B-Instruct-2507` | Apache-2.0 | 8.06 GB | Newer update of Qwen3-4B's non-thinking mode; non-thinking only, so no `<think>` tokens interfere with scoring. Card benchmarks well above Qwen3-4B non-thinking (MMLU-Pro 69.6 vs 58.0). Needs transformers ≥ 4.51. |
+| Engine A (fallback) | `Qwen/Qwen3-1.7B` | Apache-2.0 | 4.08 GB | Use it if the 4B model is too slow or runs out of memory. Needs `enable_thinking=False`. |
+| Engine B (recommended) | `MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c` | MIT | ~0.87 GB | The "-c" variant was trained only on commercially usable data, and its card scores it higher on spam (f1 0.74 vs 0.60 for the non-c model). **I still need to confirm the repo exists before downloading.** |
+| Engine B (alt.) | `MoritzLaurer/deberta-v3-large-zeroshot-v2.0` | MIT* | 870 MB | *Trained partly on non-commercially licensed NLI data, which the card flags. |
+
+The NLI models accept at most 512 tokens, so engine B middle-truncates long emails using the same helper as Jev.
+
+**Phishing-email datasets:**
+
+| Dataset | License | Size | Problems |
+|---|---|---|---|
+| `zefang-liu/phishing-email-dataset` (recommended) | LGPL-3.0 | 18,650 emails, CSV 52 MB | A copy of a Kaggle set (Enron + list mail). "Phishing" includes generic spam. Has null/empty rows, Enron-style lowercased text, and some rows up to ~17M characters. |
+| `ealvaradob/phishing-dataset` | Apache-2.0 | 1.7 GB, mixed | Same email source, mixed with URLs, SMS and HTML, and loading it needs `trust_remote_code`. Not recommended. |
+| `cybersectony/PhishingEmailDetectionv2.0` | **none declared** | 22.6k emails + 177k URLs | Unclear terms. Not recommended. |
+
+All three draw on the same 2000s-era Kaggle and Enron emails, which is why the hand-labelled recent set matters.
+
+**Libraries:** torch 2.14.1 (macOS arm64 wheels) and transformers 5.19.0, which needs PyTorch ≥ 2.5. scipy is already listed in spec §3.
+
+## P2. The runtime problem, and how I'd handle it
+
+The spec asks for a local check in under 3 s (§2). Done the obvious way, engine A runs 9 prompts per message, each repeating the message, which is roughly 5,000 tokens per check. That could take 5–15 s on an M1 Pro.
+
+The plan:
+- **Reuse the message across questions.** Encode the system prompt and message once, cache that work, then score all 9 question suffixes in a single batch. That brings it to roughly 400 + 9 × 150 tokens per check.
+- **Measure before committing.** Benchmark on 20 messages first. If it's still over about 3 s per check, fall back to Qwen3-1.7B (D2).
+- **Eval runtime:** at about 2–3 s per message, the 2,064 test messages take about 1.5 h for engine A and a few minutes for engine B. Runs go in the background and use the same on-disk cache, so they can be stopped and resumed.
+- **Calibration fit:** fit the temperatures on a fixed **1,000-message stratified subsample** of the calibration split (D3), not all 3,096. Temperature scaling fits one number per question, and 1,000 messages is plenty for that. This saves about 1.5 h per local engine.
+
+## P3. Build order (one commit per step, `pytest` green each time)
+
+Every step ends with a green `pytest`, one commit and a 2–3 line summary.
+
+**Step 10: dependencies + device helper.**
+- Add `torch` and `transformers` (D1).
+- Add `sentencepiece` or `protobuf` only if DeBERTa's tokenizer actually needs them; I'll ask first if so.
+- `engines/device.py` picks MPS, then CUDA, then CPU, and handles dtype (bf16 on MPS, falling back to fp16).
+- Model weights download to the standard HF cache, never into the repo.
+- **Tests:** device selection logic, with torch availability mocked.
+
+**Step 11: engine A, LLM option scoring (`engines/llm_scoring.py`).**
+- The state dict renders to a fixed text block: message, channel, claimed sender, URLs with registered domains, phones, amounts.
+- Each question gets a prompt with its instructions and lettered options (A, B, C…). We read the next-token log-probabilities for the option letters only and softmax them into probabilities.
+- Per type, as spec §5 describes:
+  - Noul: 2 options, value = P(true).
+  - Choice: value = the top option.
+  - Score: value = the probability-weighted level index.
+  - Confidence = top probability minus the second.
+- Shared-prefix cache plus one batched forward pass for all 9 questions.
+- The forward pass is isolated behind a `Scorer` interface, so tests never load real weights.
+- To counter first-option bias, the order of options stays as in `questions.py` (none last). I'll check on a small set whether letter position bias is a problem.
+- **Tests:**
+  - prompt rendering is deterministic, and every option gets exactly one letter token
+  - logits → probabilities and Answer mapping for each question type, using a fake scorer with hand-set logits
+  - the score expected-level maths
+  - confidence definition
+  - letter tokens are single tokens for the real tokenizer
+  - truncation of long messages
+- Optional `@pytest.mark.slow` test runs the real model on 2 messages; it's skipped by default.
+
+**Step 12: engine B, NLI (`engines/nli.py`).**
+- Each option becomes a hypothesis, e.g. "This message is a package-delivery scam."
+- The premise is the rendered state, middle-truncated to fit 512 tokens.
+- Per type:
+  - Noul: entailment vs contradiction of the instruction itself.
+  - Choice and score: softmax over each option's entailment logit.
+- All option/hypothesis pairs for one message go in one batch.
+- I'll write the hypothesis templates per option in `questions.py`, keeping it the single source of truth (e.g. `criteria` descriptions become hypotheses).
+- **Tests:** hypothesis construction for every question and option, logits → Answer for each type with a fake NLI scorer, and the 512-token truncation.
+
+**Step 13: registry + API.**
+- `EngineProvider` gains `llm` and `nli`. `GET /api/engines` reports `ready` from whether weights are in the local HF cache, and the endpoint never triggers a download.
+- `POST /api/check` with `engine: "llm"` or `"nli"` works.
+- Phase 3 needs this fallback order, set up now:
+  - default to Jev when its key is present
+  - otherwise use the best ready local engine, and say so in the response
+- **Tests:** readiness with a fake cache, engine selection, and the 503 only when *no* engine is ready.
+
+**Step 14: calibration (`calibration.py`).**
+- One temperature per question. Noul: sigmoid(logit/T). Choice and score: softmax(logits/T).
+- Fit by minimising NLL with `scipy.optimize.minimize_scalar` over log T. Store as JSON per engine and model version in `eval/calibration/`, apply at inference, and record it in `Answer.raw`.
+- **Only questions with labels can be calibrated (D4).**
+  - `is_scam` gets labels from SMS, phishing and hand-labelled data.
+  - `scam_type` gets them only from the hand-labelled set.
+  - The other seven questions have no labels anywhere, so they keep T = 1 and the report says so.
+- **Tests:**
+  - T recovered on synthetic over- and under-confident data
+  - T = 1 leaves probabilities unchanged
+  - apply/fit round trip
+  - ECE drops on synthetic miscalibrated data
+  - the calibration file is versioned by model ID
+
+**Step 15: datasets.**
+- `phishing` loader:
+  - download with a pinned sha256
+  - drop null/empty rows and exact duplicates
+  - drop rows over 50k characters; the spec's limits make them unrepresentative anyway
+  - fixed seeded **2,000-email stratified subsample** (D5), then the same 60/40 split, committed
+- `handlabeled` loader plus `python -m second_look.eval.handlabeled validate <file>`:
+  - checks the schema (text, label, `scam_type` from `questions.py`, channel, received month, source)
+  - runs `mask_pii`
+  - flags anything that still looks like a phone number, email, long digit run or `@handle` for manual review
+- The data file stays **out of git by default** (D6).
+- **Tests:** loader cleaning rules, deterministic subsample and split, and every validator rule.
+
+**Step 16: harness and comparison.**
+- `eval.run --engine llm|nli` runs on the same splits. It gains `--calibrate`, which fits temperatures on the calibration split and evaluates raw and calibrated predictions on test in one go, both in the results JSON.
+- `scam_type` macro-F1 is filled in when labels exist.
+- New `eval.compare` writes `eval/results/<date>-comparison.json` and a combined reliability chart, one panel per engine, so no chart has two y-axes.
+- `RESULTS.md` covers, with numbers, where the local engines match Jev and where they don't. That includes raw vs calibrated ECE (the Phase 2 criterion), accuracy at coverage, latency on this M1 Pro and $0 cost.
+- The threshold sweep re-runs per engine: thresholds may differ per engine in config, keyed by engine name.
+- **Tests:** compare output with fake results, and `--calibrate` end to end with FakeEngine on synthetic data.
+
+**Before any long run or paid call:** I stop and report the expected requests, cost and time:
+- local runs: time estimate from the 20-message benchmark
+- Jev on phishing and hand-labelled data: dry-run cost estimate
+
+## P4. Phase 2 acceptance criteria (spec §11)
+
+| Criterion | How it will be shown |
+|---|---|
+| All three engines run through the same harness on the same test split | `eval.run --engine jev|llm|nli --dataset sms`, same committed split file; comparison JSON lists the shared split hash |
+| Calibrated local engine's ECE lower than uncalibrated on test | Both numbers in each local engine's results JSON and in `RESULTS.md`, with before/after reliability charts |
+| `RESULTS.md` states, with numbers, where the open-source engine matches Jev and where it doesn't | Written from the comparison JSON; per dataset, per metric |
+
+## P5. Decisions needed
+
+- **D1, dependencies.** Add `torch`, which the spec doesn't list but `transformers` needs to run models. Also allow `sentencepiece` or `protobuf` if DeBERTa's tokenizer turns out to need them; I'll confirm that before adding either. `accelerate` isn't needed because the models load onto one device.
+- **D2, engine A model.** `Qwen3-4B-Instruct-2507` (recommended), with automatic fallback to `Qwen3-1.7B` if it's over about 3 s per check after the caching optimisation. The 4B model is an 8 GB download.
+- **D3, calibration fit set.** A 1,000-message stratified subsample of the calibration split (recommended), or the full 3,096, which adds about 1.5 h per local engine.
+- **D4, calibration scope.** Calibrate only questions with labels (`is_scam` and, once hand-labelled data exists, `scam_type`), and report the others as uncalibrated. Spec §5 says "per question", but there's no data to do that for the other seven.
+- **D5, phishing data.** `zefang-liu/phishing-email-dataset` (LGPL-3.0), cleaned, with a fixed 2,000-email subsample.
+  - That's 800 test emails. Running Jev on them costs about **$0.05–0.10**, confirmed by dry run before spending.
+  - The full set would be about 7k test emails: roughly $0.75 for Jev and many hours locally.
+- **D6, hand-labelled set.** I'll build the format, validator and PII checks; **you supply the messages.**
+  - Aim for 150–300 recent scams *plus* about 100 real legitimate messages (bank alerts, delivery updates, 2FA codes). Without legitimate ones, the set can't measure false alarms.
+  - Keep the file out of git (recommended), or commit it after the PII checks pass.
+- **D7, order.** Build engines and calibration on SMS and phishing first, and add the hand-labelled set whenever it's ready. The comparison re-runs at no cost from the caches.
