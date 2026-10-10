@@ -43,8 +43,10 @@ class Settings:
     jev_price_per_mtok_usd: float = 0.042  # input tokens only; output is free (docs.typesafe.ai/models.md)
 
     # Local engines (spec §3). Revisions pinned so results are reproducible.
-    llm_model: str = "Qwen/Qwen3-4B-Instruct-2507"
-    llm_revision: str = "cdbee75f17c01a7cc42f958dc650907174af0554"
+    # Qwen3-1.7B, not 4B: on a 16 GB M1 Pro the 8 GB 4B model swapped (9–51 s per check);
+    # 1.7B in fp16 runs ~2 s. Set SL_LLM_MODEL/SL_LLM_REVISION to try a larger model.
+    llm_model: str = "Qwen/Qwen3-1.7B"
+    llm_revision: str = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
     nli_model: str = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c"
     nli_revision: str = "b2730f16019076bb0009481121efbe4705e0e378"
     device: str | None = None  # None = auto (mps > cuda > cpu)

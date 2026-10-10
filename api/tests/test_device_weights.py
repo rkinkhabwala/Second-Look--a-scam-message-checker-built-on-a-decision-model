@@ -22,7 +22,7 @@ def test_auto_device_order(monkeypatch):
 
 def test_dtypes(monkeypatch):
     assert pick_dtype("cpu") is torch.float32
-    assert pick_dtype("mps") is torch.bfloat16
+    assert pick_dtype("mps") is torch.float16
     monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda: False)
     assert pick_dtype("cuda") is torch.float16
 
