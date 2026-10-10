@@ -138,6 +138,7 @@ def classify(p: float, risk_confidence: float | None, settings: Settings) -> Ver
     """Abstain band: safe < p < scam, or a low-confidence risk_level, gives UNSURE.
 
     A missing risk_level confidence doesn't trigger abstention; the band alone decides.
+    min_risk_confidence = 0 turns the confidence gate off (the tuned default for Jev).
     """
     if settings.safe_threshold < p < settings.scam_threshold:
         return VerdictLabel.UNSURE

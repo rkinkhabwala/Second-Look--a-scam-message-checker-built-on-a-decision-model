@@ -154,6 +154,7 @@ Pure, deterministic, unit-tested — no model calls.
 
 - `p = is_scam.value` (after calibration for local engines).
 - **Abstain band:** if `0.25 < p < 0.75` **or** `risk_level.confidence < 0.4` → verdict `UNSURE`. Thresholds live in config and are tuned from the coverage/accuracy curve in §9, not guessed.
+  - *Tuned 2026-10-10 (Jev `jev-1.13.0`, tuned on the SMS calibration split, checked on test):* `safe ≤ 0.25`, `scam ≥ 0.85`, and the `risk_level.confidence` gate **off** (`min_risk_confidence = 0`). On the test split this answers 84.4% of messages at 99.37% accuracy (was 76.7% at 99.18%), with 6 of 257 scams called safe (was 5). The gate cost coverage without improving accuracy: 198 of the 199 messages it alone held back would have been answered correctly. The gate stays in config, so it can be re-enabled per engine. Re-tune once the hand-labelled recent-scam set exists (Phase 2).
 - `p >= 0.75` → `LIKELY_SCAM`; `p <= 0.25` → `PROBABLY_SAFE`.
 - **Red flags** = every flag question whose probability ≥ 0.6, rendered from fixed, human-written templates (e.g. *"Asks for payment in gift cards — no real company or agency does this."*).
 - **Next steps** come from a fixed table keyed by `scam_type` (e.g. toll scams → "Check your balance only on your state's official toll website — type the address yourself"; family emergency → "Call the person on a number you already have"). Always include: don't click links, don't reply, how to report (reportfraud.ftc.gov, forward texts to 7726).

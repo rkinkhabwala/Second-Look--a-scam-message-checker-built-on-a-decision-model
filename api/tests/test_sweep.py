@@ -5,6 +5,7 @@ import pytest
 from second_look.config import Settings
 from second_look.eval.run import write_outputs
 from second_look.eval.sweep import evaluate_policy, main, recommend, sweep
+from tests.test_verdict import SPEC_S7
 
 # p, risk_confidence, label
 RECORDS = [
@@ -18,7 +19,7 @@ RECORDS = [
 
 
 def test_evaluate_policy_matches_verdict_defaults():
-    out = evaluate_policy(RECORDS, Settings())
+    out = evaluate_policy(RECORDS, SPEC_S7)
     assert out["answered"] == 2 and out["correct"] == 2
     assert out["coverage"] == pytest.approx(2 / 6)
     assert out["unsure_rate"] == pytest.approx(4 / 6)
@@ -60,7 +61,7 @@ def test_cli_tunes_and_checks_and_writes_json(tmp_path, capsys):
     write_preds(tune, RECORDS)
     write_preds(check, RECORDS[:3])
     out = main(["--tune", str(tune), "--check", str(check), "--min-accuracy", "1.0",
-                "--out", str(tmp_path / "sweep.json")], settings=Settings())
+                "--out", str(tmp_path / "sweep.json")], settings=SPEC_S7)
     assert out["recommended"]["tune"]["n"] == 6  # errored rows dropped
     assert out["recommended"]["check"]["coverage"] == pytest.approx(1.0)
     assert out["current"]["check"]["coverage"] == pytest.approx(1 / 3)

@@ -25,10 +25,11 @@ def _int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    # Verdict thresholds (spec §7)
-    scam_threshold: float = 0.75
+    # Verdict thresholds (spec §7). Tuned 2026-10-10 on the Jev SMS calibration split and
+    # checked on test: eval/results/2026-10-10-jev-sms-calibration-sweep.json.
+    scam_threshold: float = 0.85
     safe_threshold: float = 0.25
-    min_risk_confidence: float = 0.4
+    min_risk_confidence: float = 0.0  # 0 disables the risk_level confidence gate
     red_flag_threshold: float = 0.6
 
     # Jev (spec §3, §5)

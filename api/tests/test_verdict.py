@@ -20,7 +20,10 @@ from second_look.verdict import (
     make_verdict,
 )
 
-S = Settings()
+# The original spec §7 thresholds, pinned so every branch (band edges and the confidence
+# gate) stays tested whatever the tuned defaults are.
+SPEC_S7 = Settings(safe_threshold=0.25, scam_threshold=0.75, min_risk_confidence=0.4)
+S = SPEC_S7
 
 
 def answers(
@@ -219,3 +222,22 @@ def test_verdict_module_imports_no_engine_implementations():
     } | {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names}
     assert not any(m.startswith("second_look.engines.") and m != "second_look.engines.base" for m in imported)
     assert not {"httpx", "transformers"} & imported
+
+
+def test_tuned_defaults():
+    d = Settings()
+    assert (d.safe_threshold, d.scam_threshold, d.min_risk_confidence) == (0.25, 0.85, 0.0)
+
+
+@pytest.mark.parametrize(
+    "p, risk_conf, expected",
+    [
+        (0.85, 0.05, VerdictLabel.LIKELY_SCAM),  # gate off: low risk confidence doesn't abstain
+        (0.8499, 0.9, VerdictLabel.UNSURE),
+        (0.25, 0.05, VerdictLabel.PROBABLY_SAFE),
+        (0.2501, 0.9, VerdictLabel.UNSURE),
+    ],
+)
+async def test_tuned_default_policy(p, risk_conf, expected):
+    v = await verdict_via_fake_engine(answers(p, risk_conf=risk_conf), Settings())
+    assert v.verdict is expected

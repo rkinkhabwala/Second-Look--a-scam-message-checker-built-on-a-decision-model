@@ -4,7 +4,7 @@
   "dataset": "sms",
   "split": "test",
   "dataset_note": "UCI SMS Spam Collection, exact duplicates removed. Positive label = 'spam', which includes legitimate-but-unwanted marketing, so a model that correctly calls marketing 'not a scam' is scored as wrong on those messages. No scam_type labels, so scam_type macro-F1 is not computable.",
-  "created_at": "2026-10-10T22:33:40+00:00",
+  "created_at": "2026-10-10T22:48:58+00:00",
   "limit": null,
   "n": 2064,
   "n_scored": 2064,
@@ -13,8 +13,8 @@
   "n_positive": 257,
   "thresholds": {
     "safe": 0.25,
-    "scam": 0.75,
-    "min_risk_confidence": 0.4,
+    "scam": 0.85,
+    "min_risk_confidence": 0.0,
     "red_flag": 0.6
   },
   "is_scam": {
@@ -928,13 +928,13 @@
     }
   },
   "verdict_policy": {
-    "coverage": 0.7669573643410853,
-    "accuracy_when_answered": 0.9917877447883765,
-    "unsure_rate": 0.2330426356589147,
+    "coverage": 0.8435077519379846,
+    "accuracy_when_answered": 0.9936817920735209,
+    "unsure_rate": 0.15649224806201545,
     "counts": {
-      "LIKELY_SCAM": 186,
-      "UNSURE": 481,
-      "PROBABLY_SAFE": 1397
+      "LIKELY_SCAM": 147,
+      "UNSURE": 323,
+      "PROBABLY_SAFE": 1594
     }
   },
   "latency_ms": {
