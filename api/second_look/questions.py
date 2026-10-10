@@ -94,3 +94,41 @@ CHOICE_FLAG_NONE_OPTION: dict[str, str] = {
     "payment_method": "none_requested",
     "impersonation": "none",
 }
+
+# ------------------------------------------------------------ NLI hypotheses
+# The NLI engine tests each option as a standalone sentence about the message.
+# By default that's "This message " + the option description; these overrides
+# cover options whose descriptions only make sense next to the other options.
+
+NLI_OVERRIDES: dict[str, dict[str, str]] = {
+    "scam_type": {
+        "other_scam": "This message is some other kind of scam.",
+    },
+    "impersonation": {
+        "none": (
+            "This message does not claim to be from a bank, government agency, delivery company, "
+            "tech company, employer, or family member."
+        ),
+    },
+    "risk_level": {
+        "0": "This message is safe.",
+        "1": "This message is probably safe.",
+        "2": "This message is suspicious.",
+        "3": "This message is likely a scam.",
+        "4": "This message is a scam.",
+    },
+}
+
+
+def nli_hypotheses(key: str) -> dict[str, str]:
+    """Option key -> hypothesis sentence. Noul questions have one hypothesis, keyed "true"."""
+    q = QUESTIONS[key]
+    overrides = NLI_OVERRIDES.get(key, {})
+    if isinstance(q, Noul):
+        return {"true": q.instructions}
+    if isinstance(q, Choice):
+        return {
+            opt: overrides.get(opt) or f"This message {desc[0].lower()}{desc[1:]}"
+            for opt, desc in q.criteria.items()
+        }
+    return {str(i): overrides[str(i)] for i in range(len(q.criteria))}

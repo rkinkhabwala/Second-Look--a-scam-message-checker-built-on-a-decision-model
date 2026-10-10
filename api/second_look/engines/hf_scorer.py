@@ -97,3 +97,44 @@ class HFOptionScorer:
             logits = self._model(input_ids=ids).logits[0, -1].float()
             out.append(logits[self._letter_ids[:k]].tolist())
         return out
+
+
+class HFNLIScorer:
+    """DeBERTa-v3 zero-shot cross-encoder. Runs in fp32: DeBERTa-v3 is unstable in half precision."""
+
+    def __init__(self, repo_id: str, revision: str, device: str | None = None, batch_size: int = 16):
+        from transformers import AutoModelForSequenceClassification  # noqa: F401  (import check)
+
+        self.model_id = f"{repo_id}@{revision[:8]}"
+        self.repo_id = repo_id
+        self.revision = revision
+        self.device = pick_device(device)
+        self.batch_size = batch_size
+        self._model = None
+        self._tok = None
+        self._entail = self._not_entail = 0
+
+    def load(self) -> None:
+        if self._model is not None:
+            return
+        from transformers import AutoModelForSequenceClassification
+
+        self._tok = AutoTokenizer.from_pretrained(self.repo_id, revision=self.revision)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            self.repo_id, revision=self.revision, dtype=torch.float32
+        )
+        self._model = model.to(self.device).eval()
+        labels = {v.lower(): int(k) for k, v in model.config.id2label.items()}
+        self._entail, self._not_entail = labels["entailment"], labels["not_entailment"]
+
+    @torch.inference_mode()
+    def entailment_scores(self, premise: str, hypotheses: list[str]) -> list[float]:
+        self.load()
+        out: list[float] = []
+        for i in range(0, len(hypotheses), self.batch_size):
+            batch = hypotheses[i : i + self.batch_size]
+            enc = self._tok([premise] * len(batch), batch, truncation="only_first", max_length=512,
+                            padding=True, return_tensors="pt").to(self.device)
+            logits = self._model(**enc).logits.float()
+            out += (logits[:, self._entail] - logits[:, self._not_entail]).tolist()
+        return out
