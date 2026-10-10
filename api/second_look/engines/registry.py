@@ -7,6 +7,7 @@ Readiness never triggers a download.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -14,6 +15,8 @@ from second_look.config import Settings
 from second_look.engines.base import DecisionEngine, EngineUnavailable
 from second_look.engines.jev import JevEngine
 from second_look.engines.weights import is_cached, model_ref
+
+log = logging.getLogger("second_look")
 
 ENGINE_ORDER = ("jev", "llm", "nli")
 DEFAULT_ENGINE = "jev"
@@ -32,18 +35,33 @@ class UnknownEngine(KeyError):
     pass
 
 
+def with_calibration(engine: DecisionEngine) -> DecisionEngine:
+    """Wrap a local engine with its fitted temperatures if they were fit for this exact model."""
+    from second_look.calibration import CalibratedEngine, Calibration
+
+    cal = Calibration.load(engine.name)
+    if cal is None:
+        return engine
+    if not cal.matches(engine):
+        log.warning("ignoring calibration for %s: fit on %s, engine runs %s", engine.name, cal.model, engine.model)
+        return engine
+    return CalibratedEngine(engine, cal)
+
+
 def _build_llm(settings: Settings) -> DecisionEngine:
     from second_look.engines.hf_scorer import HFOptionScorer
     from second_look.engines.llm_scoring import LLMScoringEngine
 
-    return LLMScoringEngine(HFOptionScorer(settings.llm_model, settings.llm_revision, settings.device))
+    return with_calibration(
+        LLMScoringEngine(HFOptionScorer(settings.llm_model, settings.llm_revision, settings.device))
+    )
 
 
 def _build_nli(settings: Settings) -> DecisionEngine:
     from second_look.engines.hf_scorer import HFNLIScorer
     from second_look.engines.nli import NLIEngine
 
-    return NLIEngine(HFNLIScorer(settings.nli_model, settings.nli_revision, settings.device))
+    return with_calibration(NLIEngine(HFNLIScorer(settings.nli_model, settings.nli_revision, settings.device)))
 
 
 BUILDERS: dict[str, Callable[[Settings], DecisionEngine]] = {
