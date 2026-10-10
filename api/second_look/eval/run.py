@@ -20,12 +20,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
+from sklearn.metrics import f1_score
 
 from second_look.config import Settings, get_settings
 from second_look.engines.base import Answer, DecisionEngine, EngineError, EngineUnavailable
 from second_look.engines.registry import EngineProvider
 from second_look.eval import charts, metrics
-from second_look.eval.datasets import DATASET_NOTES, EVAL_DIR, LOADERS, Example, load_split
+from second_look.calibration import Calibration, fit_calibration
+from second_look.eval.datasets import DATASET_NOTES, EVAL_DIR, LOADERS, Example, calibration_subset, load_split
 from second_look.eval.download import DATA_DIR
 from second_look.preprocess import (
     BYTES_PER_TOKEN,
@@ -59,6 +61,11 @@ def make_request(engine: DecisionEngine, example: Example, settings: Settings) -
         payload, engine_truncated = engine.build_payload(state, QUESTIONS)
         return state, payload, meta.truncated or engine_truncated
     return state, {"engine": engine.name, "state": state, "questions": _questions_json()}, meta.truncated
+
+
+def split_hash(examples: list[Example]) -> str:
+    """Fingerprint of exactly which messages were scored, so comparisons can prove they match."""
+    return hashlib.sha256("\n".join(sorted(e.id for e in examples)).encode()).hexdigest()[:16]
 
 
 def cache_key(payload: dict) -> str:
@@ -119,7 +126,7 @@ async def evaluate(
         nonlocal done
         state, payload, pre_truncated = make_request(engine, ex, settings)
         path = cache_dir / f"{cache_key(payload)}.json"
-        record = {"id": ex.id, "label": ex.label, "error": None, "cached": False}
+        record = {"id": ex.id, "label": ex.label, "scam_type_label": ex.scam_type, "error": None, "cached": False}
         try:
             if use_cache and path.exists():
                 entry = json.loads(path.read_text())
@@ -141,15 +148,8 @@ async def evaluate(
             if done % 100 == 0 or done == len(examples):
                 progress(f"  {done}/{len(examples)}")
 
-        answers = entry["answers"]
-        v = make_verdict(answers, settings)
-        risk = answers.get("risk_level")
+        record.update(score_answers(entry["answers"], settings))
         record.update({
-            "p": float(answers["is_scam"].value),
-            "verdict": v.verdict.value,
-            "scam_type": answers["scam_type"].value if "scam_type" in answers else None,
-            "risk_confidence": risk.confidence if risk else None,
-            "red_flags": len(v.red_flags),
             "latency_ms": entry["latency_ms"],
             "attempts": entry.get("attempts", 1),
             "input_tokens": (entry.get("usage") or {}).get("input_tokens"),
@@ -159,6 +159,45 @@ async def evaluate(
         return record
 
     return list(await asyncio.gather(*(one(ex) for ex in examples)))
+
+
+def score_answers(answers: dict[str, Answer], settings: Settings) -> dict:
+    """The per-message fields metrics need. `answers` stays in memory only (never written)."""
+    v = make_verdict(answers, settings)
+    risk = answers.get("risk_level")
+    return {
+        "p": float(answers["is_scam"].value),
+        "verdict": v.verdict.value,
+        "scam_type": answers["scam_type"].value if "scam_type" in answers else None,
+        "risk_confidence": risk.confidence if risk else None,
+        "red_flags": len(v.red_flags),
+        "answers": answers,
+    }
+
+
+def fit_from_records(engine: DecisionEngine, records: list[dict]) -> Calibration:
+    """Fit temperatures on a calibration split's records (is_scam always; scam_type where labelled)."""
+    ok = [r for r in records if r["error"] is None]
+    build_payload = getattr(engine, "build_payload", None)
+    prompt_version = build_payload({"message": ""}, QUESTIONS)[0].get("prompt_version") if build_payload else None
+    return fit_calibration(
+        engine.name,
+        getattr(engine, "model", None),
+        prompt_version,
+        [r["answers"] for r in ok],
+        {"is_scam": [r["label"] for r in ok], "scam_type": [r["scam_type_label"] for r in ok]},
+        QUESTIONS,
+    )
+
+
+def recalibrate(records: list[dict], cal: Calibration, settings: Settings) -> list[dict]:
+    out = []
+    for r in records:
+        if r["error"] is not None:
+            out.append(r)
+            continue
+        out.append({**r, **score_answers(cal.apply(r["answers"], QUESTIONS), settings)})
+    return out
 
 
 # ------------------------------------------------------------------ summary
@@ -212,11 +251,7 @@ def summarize(
             "reliability_bins": metrics.reliability_bins(y, p) if has_data else [],
             "coverage_curve": metrics.coverage_curve(y, p) if has_data else [],
         },
-        "scam_type": {
-            "macro_f1": None,
-            "note": "Not computable: this dataset has no scam_type labels.",
-            "predicted_counts": _counts(r["scam_type"] for r in ok),
-        },
+        "scam_type": _scam_type_metrics(ok),
         "verdict_policy": metrics.policy_metrics(y, [r["verdict"] for r in ok]) if has_data else None,
         "latency_ms": {
             "p50": metrics.percentile(latencies, 50),
@@ -226,6 +261,21 @@ def summarize(
         "cost_per_1000_checks": metrics.cost_per_1000(tokens, price),
         "truncated_count": sum(bool(r.get("truncated")) for r in ok),
         "retried_count": sum(r.get("attempts", 1) > 1 for r in ok),
+    }
+
+
+def _scam_type_metrics(ok: list[dict]) -> dict:
+    labelled = [r for r in ok if r.get("scam_type_label")]
+    out = {"predicted_counts": _counts(r["scam_type"] for r in ok)}
+    if not labelled:
+        return {"macro_f1": None, "note": "Not computable: this dataset has no scam_type labels.", **out}
+    y_true = [r["scam_type_label"] for r in labelled]
+    y_pred = [r["scam_type"] for r in labelled]
+    return {
+        "macro_f1": float(f1_score(y_true, y_pred, labels=sorted(set(y_true)), average="macro", zero_division=0)),
+        "accuracy": float(np.mean([a == b for a, b in zip(y_true, y_pred)])),
+        "n_labelled": len(labelled),
+        **out,
     }
 
 
@@ -249,6 +299,7 @@ def write_outputs(summary: dict, records: list[dict], out_dir: Path) -> dict[str
         "predictions": out_dir / f"{prefix}-predictions.jsonl",
         "reliability": out_dir / f"{prefix}-reliability.png",
         "coverage": out_dir / f"{prefix}-coverage.png",
+        "reliability_uncalibrated": out_dir / f"{prefix}-reliability-uncalibrated.png",
     }
     s = summary["is_scam"]
     title = f"{summary['engine']} ({summary['model']}) on {summary['dataset']} {summary['split']}, n={summary['n_scored']}"
@@ -257,10 +308,17 @@ def write_outputs(summary: dict, records: list[dict], out_dir: Path) -> dict[str
         charts.coverage_chart(s["coverage_curve"], s["accuracy_at_80_coverage"], s["accuracy_at_90_coverage"],
                               f"Accuracy vs coverage — {title}", paths["coverage"])
     summary["charts"] = {k: paths[k].name for k in ("reliability", "coverage")}
+    raw = (summary.get("uncalibrated") or {}).get("is_scam")
+    if raw and raw["reliability_bins"]:
+        charts.reliability_diagram(raw["reliability_bins"], raw["ece_10_bins"],
+                                   f"Reliability before calibration — {title}", paths["reliability_uncalibrated"])
+        summary["charts"]["reliability_uncalibrated"] = paths["reliability_uncalibrated"].name
     summary["predictions_file"] = paths["predictions"].name
     paths["json"].write_text(json.dumps(summary, indent=2))
     # IDs, labels and outputs only: message text is never written to results.
-    paths["predictions"].write_text("".join(json.dumps(r) + "\n" for r in records))
+    paths["predictions"].write_text("".join(
+        json.dumps({k: v for k, v in r.items() if k != "answers"}) + "\n" for r in records
+    ))
     return paths
 
 
@@ -268,7 +326,9 @@ def write_outputs(summary: dict, records: list[dict], out_dir: Path) -> dict[str
 
 
 def default_engine_factory(name: str, settings: Settings) -> DecisionEngine:
-    return EngineProvider(settings).get(name)
+    """The raw engine: caches must hold uncalibrated answers, so calibration can be refit."""
+    engine = EngineProvider(settings).get(name)
+    return getattr(engine, "inner", engine)
 
 
 def main(
@@ -290,8 +350,14 @@ def main(
     parser.add_argument("--cache-dir", type=Path, default=CACHE_DIR)
     parser.add_argument("--out-dir", type=Path, default=RESULTS_DIR)
     parser.add_argument("--splits-dir", type=Path, default=None)
+    parser.add_argument("--calibrate", action="store_true",
+                        help="local engines: fit temperatures on the calibration subset, report raw and calibrated")
+    parser.add_argument("--calib-size", type=int, default=1_000)
+    parser.add_argument("--calibration-dir", type=Path, default=None)
     args = parser.parse_args(argv)
-    settings = settings or get_settings()
+    if args.calibrate and args.split != "test":
+        parser.error("--calibrate evaluates on the test split")
+    settings = (settings or get_settings()).for_engine(args.engine)
 
     split_kwargs = {"data_dir": args.data_dir}
     if args.splits_dir:
@@ -299,6 +365,9 @@ def main(
     examples = load_split(args.dataset, args.split, **split_kwargs)
     if args.limit:
         examples = examples[: args.limit]
+    calib_examples: list[Example] = []
+    if args.calibrate:
+        calib_examples = calibration_subset(load_split(args.dataset, "calibration", **split_kwargs), args.calib_size)
 
     try:
         engine = engine_factory(args.engine, settings)
@@ -308,7 +377,8 @@ def main(
         raise SystemExit(f"Unknown engine '{args.engine}'") from None
 
     cache_dir = args.cache_dir / args.engine
-    plan = plan_run(engine, examples, cache_dir if not args.no_cache else Path("/nonexistent"), settings)
+    plan = plan_run(engine, calib_examples + examples, cache_dir if not args.no_cache else Path("/nonexistent"),
+                    settings)
     print(
         f"{args.engine} on {args.dataset}/{args.split}: {plan['examples']} examples, "
         f"{plan['cached']} cached, {plan['requests']} new requests, "
@@ -319,21 +389,36 @@ def main(
         return plan
 
     async def go():
+        kw = dict(settings=settings, cache_dir=cache_dir, use_cache=not args.no_cache, concurrency=args.concurrency)
         try:
-            return await evaluate(engine, examples, settings=settings, cache_dir=cache_dir,
-                                  use_cache=not args.no_cache, concurrency=args.concurrency)
+            calib = await evaluate(engine, calib_examples, **kw) if calib_examples else []
+            return calib, await evaluate(engine, examples, **kw)
         finally:
             close = getattr(engine, "aclose", None)
             if close:
                 await close()
 
     try:
-        records = asyncio.run(go())
+        calib_records, records = asyncio.run(go())
     except EngineError as exc:
         raise SystemExit(f"Stopped: {exc}") from None
 
-    summary = summarize(records, engine_name=engine.name, dataset=args.dataset, split=args.split,
-                        settings=settings, limit=args.limit, target_accuracy=args.target_accuracy)
+    common = dict(engine_name=engine.name, dataset=args.dataset, split=args.split, settings=settings,
+                  limit=args.limit, target_accuracy=args.target_accuracy)
+    cal = None
+    if args.calibrate:
+        cal = fit_from_records(engine, calib_records)
+        raw_summary = summarize(records, **common)
+        records = recalibrate(records, cal, settings)
+    summary = summarize(records, **common)
+    summary["split_hash"] = split_hash(examples)
+    if cal is not None:
+        summary["uncalibrated"] = {k: raw_summary[k] for k in ("is_scam", "verdict_policy", "scam_type")}
+        saved = [cal.save(args.calibration_dir, f"{engine.name}-{args.dataset}")]
+        if args.dataset == "sms" and not args.limit:  # the app's default calibration (text messages)
+            saved.append(cal.save(args.calibration_dir))
+        summary["calibration"] = {**cal.__dict__, "fit_examples": len(calib_records),
+                                  "files": [p.name for p in saved]}
     paths = write_outputs(summary, records, args.out_dir)
     s = summary["is_scam"]
     fmt = lambda v, f: "n/a" if v is None else format(v, f)  # noqa: E731
@@ -347,6 +432,9 @@ def main(
         f"  acc@90% cov    {fmt(s['accuracy_at_90_coverage'], '.4f')}\n"
         f"  latency p50/95 {fmt(summary['latency_ms']['p50'], '.0f')} / {fmt(summary['latency_ms']['p95'], '.0f')} ms\n"
         f"  cost / 1k      ${fmt(summary['cost_per_1000_checks']['usd'], '.4f')}\n"
+        + (f"  calibration    T={summary['calibration']['temperatures']} | ECE before "
+           f"{fmt(summary['uncalibrated']['is_scam']['ece_10_bins'], '.4f')} -> after {fmt(s['ece_10_bins'], '.4f')}\n"
+           if cal is not None else "") +
         f"Wrote {paths['json']}"
     )
     return summary

@@ -7,10 +7,12 @@ coverage/accuracy curve without touching logic.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 API_ROOT = Path(__file__).resolve().parent.parent
+
+ENGINE_THRESHOLDS: dict[str, dict[str, float]] = {}
 
 
 def _float(name: str, default: float) -> float:
@@ -51,8 +53,18 @@ class Settings:
     nli_revision: str = "b2730f16019076bb0009481121efbe4705e0e378"
     device: str | None = None  # None = auto (mps > cuda > cpu)
 
+    # Per-engine verdict thresholds, set from each engine's sweep (eval/results/*-sweep.json).
+    # Engines not listed use the defaults above.
+    engine_thresholds: dict[str, dict[str, float]] = field(default_factory=lambda: dict(ENGINE_THRESHOLDS))
+
     # Storage
     db_url: str = field(default_factory=lambda: f"sqlite:///{API_ROOT / 'second_look.db'}")
+
+
+    def for_engine(self, engine: str) -> Settings:
+        """These settings with the engine's own tuned thresholds applied, if it has any."""
+        overrides = self.engine_thresholds.get(engine)
+        return replace(self, **overrides) if overrides else self
 
 
 def get_settings() -> Settings:

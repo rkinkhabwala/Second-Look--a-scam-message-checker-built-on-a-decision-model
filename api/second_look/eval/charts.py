@@ -87,3 +87,24 @@ def coverage_chart(curve: list[dict], acc80: float, acc90: float, title: str, pa
     fig.tight_layout()
     fig.savefig(path, dpi=150, facecolor=SURFACE)
     plt.close(fig)
+
+
+def reliability_grid(panels: list[tuple[str, list[dict], float]], title: str, path: Path) -> None:
+    """Small multiples: one reliability diagram per engine, shared axes, no second y-scale."""
+    n = len(panels)
+    fig, axes = plt.subplots(1, n, figsize=(4.2 * n, 4.4), sharey=True, facecolor=SURFACE, squeeze=False)
+    for ax, (name, bins, ece) in zip(axes[0], panels):
+        _style(ax)
+        ax.plot([0, 1], [0, 1], color=MUTED, linewidth=1.2, linestyle=(0, (4, 3)))
+        pts = [b for b in bins if b["count"]]
+        ax.plot([b["mean_predicted"] for b in pts], [b["observed_rate"] for b in pts], color=SERIES,
+                linewidth=2, marker="o", markersize=6, markeredgecolor=SURFACE, markeredgewidth=2)
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.set_title(f"{name}\nECE {ece:.3f}", color=INK, fontsize=10, loc="left")
+        ax.set_xlabel("Predicted P(scam)")
+    axes[0][0].set_ylabel("Observed scam rate")
+    fig.suptitle(title, color=INK, fontsize=11, x=0.01, ha="left")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150, facecolor=SURFACE)
+    plt.close(fig)

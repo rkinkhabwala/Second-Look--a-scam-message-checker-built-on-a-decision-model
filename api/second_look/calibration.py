@@ -109,10 +109,11 @@ class Calibration:
     def matches(self, engine) -> bool:
         return engine.name == self.engine and getattr(engine, "model", None) == self.model
 
-    def save(self, directory: Path | None = None) -> Path:
+    def save(self, directory: Path | None = None, name: str | None = None) -> Path:
+        """Save as <engine>.json (what the app loads) or under another name, e.g. <engine>-<dataset>."""
         directory = directory or CALIBRATION_DIR
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"{self.engine}.json"
+        path = directory / f"{name or self.engine}.json"
         path.write_text(json.dumps(self.__dict__, indent=2) + "\n")
         return path
 

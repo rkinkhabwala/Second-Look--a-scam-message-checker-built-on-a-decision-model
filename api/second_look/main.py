@@ -117,7 +117,7 @@ def create_app(
             raise HTTPException(502, ENGINE_FAILED_MESSAGE) from None
         latency_ms = (time.perf_counter() - start) * 1000
 
-        v = make_verdict(answers, settings)
+        v = make_verdict(answers, settings.for_engine(engine.name))
         truncated = meta.truncated or engine_truncated
         check_id = await run_in_threadpool(
             storage.log_check,
