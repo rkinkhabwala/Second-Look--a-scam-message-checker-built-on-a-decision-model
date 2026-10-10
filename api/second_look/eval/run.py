@@ -241,6 +241,8 @@ def write_outputs(summary: dict, records: list[dict], out_dir: Path) -> dict[str
     out_dir.mkdir(parents=True, exist_ok=True)
     date = summary["created_at"][:10]
     prefix = f"{date}-{summary['engine']}-{summary['dataset']}"
+    if summary["split"] != "test":  # test keeps the spec's short name; other splits must not overwrite it
+        prefix += f"-{summary['split']}"
     if summary["limit"]:
         prefix += f"-limit{summary['limit']}"
     paths = {
