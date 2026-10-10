@@ -219,10 +219,16 @@ def extract_amounts(text: str) -> list[dict]:
 # ------------------------------------------------------------------ truncation
 
 
+# Jev publishes no tokenizer. Measured on 50 real jev-1.13.0 requests (2026-10-10):
+# 2.68–2.76 UTF-8 bytes per input token for our JSON payloads. 2.5 stays on the safe side.
+BYTES_PER_TOKEN = 2.5
+MEASURED_JEV_BYTES_PER_TOKEN = 2.72
+
+
 def estimate_tokens(obj: str | dict | list) -> int:
-    """Conservative token estimate (≈3 UTF-8 bytes per token); Jev publishes no tokenizer."""
+    """Conservative (over-)estimate of Jev input tokens."""
     s = obj if isinstance(obj, str) else json.dumps(obj, ensure_ascii=False)
-    return math.ceil(len(s.encode("utf-8")) / 3)
+    return math.ceil(len(s.encode("utf-8")) / BYTES_PER_TOKEN)
 
 
 def truncate_middle(text: str, max_tokens: int) -> tuple[str, bool]:
@@ -230,7 +236,7 @@ def truncate_middle(text: str, max_tokens: int) -> tuple[str, bool]:
     if estimate_tokens(text) <= max_tokens:
         return text, False
     marker_budget = 16
-    keep_bytes = max(0, (max_tokens - marker_budget) * 3)
+    keep_bytes = max(0, int((max_tokens - marker_budget) * BYTES_PER_TOKEN))
     encoded = text.encode("utf-8")
     head = encoded[: keep_bytes // 2].decode("utf-8", errors="ignore")
     tail = encoded[len(encoded) - keep_bytes // 2 :].decode("utf-8", errors="ignore")

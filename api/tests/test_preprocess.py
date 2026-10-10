@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from second_look.preprocess import (
@@ -209,3 +211,13 @@ def test_build_state_truncates_and_records_it_but_keeps_late_links():
 def test_build_state_not_truncated_when_under_budget():
     state, meta = build_state("hello there", max_state_tokens=2_000)
     assert state["message"] == "hello there" and not meta.truncated
+
+
+def test_token_estimate_is_conservative_vs_measured_jev_tokenization():
+    from second_look.preprocess import BYTES_PER_TOKEN, MEASURED_JEV_BYTES_PER_TOKEN
+
+    # Fewer assumed bytes per token -> more estimated tokens -> we never under-count Jev's limit.
+    assert BYTES_PER_TOKEN < 2.68 <= MEASURED_JEV_BYTES_PER_TOKEN
+    payload = {"state": {"message": "Your package is held. Pay $1.99 at usps-redeliver.top"}}
+    measured = len(json.dumps(payload, ensure_ascii=False).encode()) / MEASURED_JEV_BYTES_PER_TOKEN
+    assert estimate_tokens(payload) >= measured

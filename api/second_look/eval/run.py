@@ -28,7 +28,13 @@ from second_look.engines.registry import EngineProvider
 from second_look.eval import charts, metrics
 from second_look.eval.datasets import DATASET_NOTES, EVAL_DIR, LOADERS, Example, load_split
 from second_look.eval.download import DATA_DIR
-from second_look.preprocess import build_state, estimate_tokens, state_token_budget
+from second_look.preprocess import (
+    BYTES_PER_TOKEN,
+    MEASURED_JEV_BYTES_PER_TOKEN,
+    build_state,
+    estimate_tokens,
+    state_token_budget,
+)
 from second_look.questions import QUESTIONS
 from second_look.verdict import make_verdict
 
@@ -68,8 +74,8 @@ def plan_run(engine: DecisionEngine, examples: list[Example], cache_dir: Path, s
         if not (cache_dir / f"{cache_key(payload)}.json").exists():
             uncached += 1
             tokens.append(estimate_tokens(payload))
-    conservative = sum(tokens)  # ~3 bytes/token
-    likely = int(conservative * 3 / 4)  # English averages ~4 bytes/token
+    conservative = sum(tokens)
+    likely = int(conservative * BYTES_PER_TOKEN / MEASURED_JEV_BYTES_PER_TOKEN)
     price = settings.jev_price_per_mtok_usd if engine.name == "jev" else 0.0
     return {
         "examples": len(examples),
