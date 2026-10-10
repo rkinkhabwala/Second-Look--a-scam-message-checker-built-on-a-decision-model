@@ -42,6 +42,13 @@ class Settings:
     jev_max_state_tokens: int = 32_000  # state + longest question
     jev_price_per_mtok_usd: float = 0.042  # input tokens only; output is free (docs.typesafe.ai/models.md)
 
+    # Local engines (spec §3). Revisions pinned so results are reproducible.
+    llm_model: str = "Qwen/Qwen3-4B-Instruct-2507"
+    llm_revision: str = "cdbee75f17c01a7cc42f958dc650907174af0554"
+    nli_model: str = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c"
+    nli_revision: str = "b2730f16019076bb0009481121efbe4705e0e378"
+    device: str | None = None  # None = auto (mps > cuda > cpu)
+
     # Storage
     db_url: str = field(default_factory=lambda: f"sqlite:///{API_ROOT / 'second_look.db'}")
 
@@ -58,5 +65,10 @@ def get_settings() -> Settings:
         jev_model=os.environ.get("SL_JEV_MODEL", d.jev_model),
         jev_timeout_s=_float("SL_JEV_TIMEOUT_S", d.jev_timeout_s),
         jev_max_retries=_int("SL_JEV_MAX_RETRIES", d.jev_max_retries),
+        llm_model=os.environ.get("SL_LLM_MODEL", d.llm_model),
+        llm_revision=os.environ.get("SL_LLM_REVISION", d.llm_revision),
+        nli_model=os.environ.get("SL_NLI_MODEL", d.nli_model),
+        nli_revision=os.environ.get("SL_NLI_REVISION", d.nli_revision),
+        device=os.environ.get("SL_DEVICE") or None,
         db_url=os.environ.get("SL_DB_URL", d.db_url),
     )
