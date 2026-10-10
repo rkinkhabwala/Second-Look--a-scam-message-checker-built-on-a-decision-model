@@ -13,7 +13,9 @@ from pathlib import Path
 
 from sklearn.model_selection import train_test_split
 
-from second_look.eval.download import DATA_DIR, SMS_FILE
+import pandas as pd
+
+from second_look.eval.download import DATA_DIR, PHISHING_FILE, SMS_FILE
 
 EVAL_DIR = Path(__file__).resolve().parent
 SPLITS_DIR = EVAL_DIR / "splits"
@@ -27,6 +29,7 @@ class Example:
     text: str
     label: int  # 1 = scam/spam, 0 = legitimate
     channel: str = "sms"
+    scam_type: str | None = None  # only where a dataset labels it (hand-labelled set)
 
 
 def text_id(dataset: str, text: str) -> str:
@@ -53,13 +56,76 @@ def load_sms(data_dir: Path = DATA_DIR) -> list[Example]:
     return list(examples.values())
 
 
-LOADERS = {"sms": load_sms}
+PHISHING_SAMPLE = 2_000
+PHISHING_MAX_CHARS = 50_000
+
+
+def load_phishing(data_dir: Path = DATA_DIR, sample: int | None = PHISHING_SAMPLE) -> list[Example]:
+    """zefang-liu/phishing-email-dataset, cleaned, then a fixed stratified sample (PLAN D5).
+
+    Drops null/blank/"empty" rows, exact duplicates and rows over 50k characters.
+    'Phishing Email' (which includes generic spam) counts as positive.
+    """
+    path = data_dir / PHISHING_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found. Run: python -m second_look.eval.download phishing")
+    df = pd.read_csv(path, usecols=["Email Text", "Email Type"])
+    text = df["Email Text"].fillna("").astype(str).str.strip()
+    keep = (text != "") & (text.str.lower() != "empty") & (text.str.len() <= PHISHING_MAX_CHARS)
+    examples: dict[str, Example] = {}
+    for t, kind in zip(text[keep], df["Email Type"][keep]):
+        ex_id = text_id("phishing", t)
+        if ex_id not in examples:
+            examples[ex_id] = Example(id=ex_id, text=t, label=int(kind == "Phishing Email"), channel="email")
+    out = list(examples.values())
+    if sample and sample < len(out):
+        out = stratified_sample(out, sample)
+    return out
+
+
+def stratified_sample(examples: list[Example], n: int, seed: int = SEED) -> list[Example]:
+    """A fixed, label-stratified subset (order-independent: IDs are sorted first)."""
+    ordered = sorted(examples, key=lambda e: e.id)
+    keep, _ = train_test_split(ordered, train_size=n, random_state=seed, stratify=[e.label for e in ordered])
+    return keep
+
+
+def calibration_subset(examples: list[Example], n: int = 1_000) -> list[Example]:
+    """The fixed subset of a calibration split that local engines fit temperatures on (PLAN D3)."""
+    return examples if len(examples) <= n else stratified_sample(examples, n)
+
+
+def load_handlabeled(data_dir: Path = DATA_DIR) -> list[Example]:
+    from second_look.eval.handlabeled import HANDLABELED_FILE, load_records
+
+    path = data_dir / HANDLABELED_FILE
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found. See: python -m second_look.eval.handlabeled --help")
+    out: dict[str, Example] = {}
+    for r in load_records(path):
+        ex_id = text_id("hand", r["text"])
+        out.setdefault(ex_id, Example(
+            id=ex_id, text=r["text"], label=int(r["label"] == "scam"), channel=r["channel"],
+            scam_type=r.get("scam_type") or ("not_a_scam" if r["label"] == "safe" else None),
+        ))
+    return list(out.values())
+
+
+LOADERS = {"sms": load_sms, "phishing": load_phishing, "handlabeled": load_handlabeled}
 
 DATASET_NOTES = {
     "sms": (
         "UCI SMS Spam Collection, exact duplicates removed. Positive label = 'spam', which includes "
         "legitimate-but-unwanted marketing, so a model that correctly calls marketing 'not a scam' "
         "is scored as wrong on those messages. No scam_type labels, so scam_type macro-F1 is not computable."
+    ),
+    "phishing": (
+        "zefang-liu/phishing-email-dataset (Kaggle 'Phishing Email Detection'; Enron-era mail). Null/empty rows, "
+        "exact duplicates and rows over 50k characters removed; fixed stratified sample of 2,000. Positive label "
+        "'Phishing Email' includes generic spam. No scam_type labels."
+    ),
+    "handlabeled": (
+        "Hand-labelled recent messages (scams and legitimate), personal data masked. Has scam_type labels."
     ),
 }
 
