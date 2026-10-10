@@ -23,7 +23,6 @@ import numpy as np
 
 from second_look.config import Settings, get_settings
 from second_look.engines.base import Answer, DecisionEngine, EngineError, EngineUnavailable
-from second_look.engines.jev import JevEngine
 from second_look.engines.registry import EngineProvider
 from second_look.eval import charts, metrics
 from second_look.eval.datasets import DATASET_NOTES, EVAL_DIR, LOADERS, Example, load_split
@@ -56,7 +55,7 @@ def make_request(engine: DecisionEngine, example: Example, settings: Settings) -
         _questions_json(), settings.jev_max_state_tokens, settings.jev_max_request_tokens
     )
     state, meta = build_state(example.text, example.channel, max_state_tokens=budget)
-    if isinstance(engine, JevEngine):
+    if hasattr(engine, "build_payload"):  # the engine's exact input, so caches key on model + prompt
         payload, engine_truncated = engine.build_payload(state, QUESTIONS)
         return state, payload, meta.truncated or engine_truncated
     return state, {"engine": engine.name, "state": state, "questions": _questions_json()}, meta.truncated
@@ -93,7 +92,7 @@ def plan_run(engine: DecisionEngine, examples: list[Example], cache_dir: Path, s
 
 async def _call(engine: DecisionEngine, state: dict) -> dict:
     start = time.perf_counter()
-    if isinstance(engine, JevEngine):
+    if hasattr(engine, "run"):
         r = await engine.run(state, QUESTIONS)
         return {"answers": r.answers, "model": r.model, "usage": r.usage,
                 "latency_ms": r.latency_ms, "attempts": r.attempts, "truncated": r.truncated}

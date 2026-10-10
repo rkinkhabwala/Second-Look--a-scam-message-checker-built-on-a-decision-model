@@ -9,26 +9,26 @@ import asyncio
 import random
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
 
 import httpx
 
 from second_look.config import Settings
-from second_look.engines.base import Answer, Choice, EngineError, EngineUnavailable, Noul, Score
+from second_look.engines.base import (
+    Answer,
+    Choice,
+    EngineError,
+    EngineResult,
+    EngineUnavailable,
+    Noul,
+    Score,
+)
 from second_look.preprocess import estimate_tokens, state_token_budget, truncate_middle
 
 RETRY_STATUSES = frozenset({408, 429})  # plus every 5xx (529 = Overloaded)
 MAX_RETRY_AFTER_S = 10.0
 
 
-@dataclass
-class JevResult:
-    answers: dict[str, Answer]
-    model: str | None
-    usage: dict = field(default_factory=dict)
-    truncated: bool = False
-    attempts: int = 1
-    latency_ms: float = 0.0
+JevResult = EngineResult
 
 
 class JevEngine:

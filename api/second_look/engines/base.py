@@ -5,6 +5,7 @@ Mirrors Jev's three question types so every engine is interchangeable.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
@@ -45,6 +46,18 @@ class DecisionEngine(Protocol):
     async def decide(
         self, state: str | dict, questions: dict[str, Noul | Choice | Score]
     ) -> dict[str, Answer]: ...
+
+
+@dataclass
+class EngineResult:
+    """Answers plus run metadata, for engines that offer `run()` alongside `decide()`."""
+
+    answers: dict[str, Answer]
+    model: str | None
+    usage: dict = field(default_factory=dict)
+    truncated: bool = False
+    attempts: int = 1
+    latency_ms: float = 0.0
 
 
 class EngineError(Exception):

@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 
 from second_look.config import Settings, get_settings
 from second_look.engines.base import EngineError, EngineUnavailable
-from second_look.engines.jev import JevEngine
 from second_look.engines.registry import DEFAULT_ENGINE, EngineProvider, UnknownEngine
 from second_look.preprocess import Channel, build_state, state_token_budget
 from second_look.questions import QUESTIONS
@@ -103,7 +102,7 @@ def create_app(
         )
         start = time.perf_counter()
         try:
-            if isinstance(engine, JevEngine):
+            if hasattr(engine, "run"):  # engines that report truncation and usage
                 result = await engine.run(state, QUESTIONS)
                 answers, engine_truncated = result.answers, result.truncated
             else:
