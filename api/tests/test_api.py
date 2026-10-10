@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from second_look.config import Settings
 from second_look.engines.base import EngineError
 from second_look.engines.fake import FakeEngine
-from second_look.engines.registry import EngineProvider
+from second_look.engines.registry import EngineProvider, EngineStatus
 from second_look.main import ENGINE_FAILED_MESSAGE, NO_ENGINE_MESSAGE, create_app
 from second_look.questions import QUESTIONS
 from second_look.storage import Storage
@@ -16,9 +16,16 @@ from tests.test_verdict import answers
 
 
 class FakeProvider(EngineProvider):
-    def __init__(self, engine, settings=Settings()):
+    """Serves an injected engine under `name` and reports it ready."""
+
+    def __init__(self, engine, settings=Settings(), name="jev"):
         super().__init__(settings)
-        self._engines = {"jev": engine}
+        self._engines = {name: engine}
+
+    def _status(self, name):
+        if name in self._engines:
+            return EngineStatus(name, True, None, "fake")
+        return super()._status(name)
 
 
 def make_app(settings=Settings(), provider=None):
@@ -68,9 +75,14 @@ def test_no_api_key_returns_clear_503():
 
 def test_engines_endpoint_reports_readiness():
     no_key = TestClient(make_app(Settings())).get("/api/engines").json()
-    assert no_key["engines"] == [
-        {"name": "jev", "ready": False, "reason": "TYPESAFE_API_KEY is not set", "model": "jev-1.13.0"}
-    ]
+    assert no_key["default"] is None
+    assert [e["name"] for e in no_key["engines"]] == ["jev", "llm", "nli"]
+    assert no_key["engines"][0] == {
+        "name": "jev", "ready": False, "reason": "TYPESAFE_API_KEY is not set", "model": "jev-1.13.0"
+    }
+    for local in no_key["engines"][1:]:
+        assert local["ready"] is False and "weights download" in local["reason"]
+        assert "@" in local["model"]
     with_key = TestClient(make_app(Settings(typesafe_api_key="test-key-not-real"))).get("/api/engines").json()
     assert with_key["engines"][0]["ready"] is True
     assert with_key["default"] == "jev"
@@ -110,3 +122,54 @@ def test_check_end_to_end_with_real_jev_engine_and_mocked_http(respx_router):
     assert r.status_code == 200, r.text
     assert r.json()["engine"] == "jev"
     assert r.json()["verdict"] == "LIKELY_SCAM"  # p=0.9, risk confidence 0.65
+
+
+# ------------------------------------------------------------- local engines
+
+
+def test_falls_back_to_local_engine_and_says_so():
+    from second_look.main import FALLBACK_NOTICE
+
+    engine = FakeEngine(answers(0.93))
+    engine.name = "llm"
+    r = TestClient(make_app(provider=FakeProvider(engine, name="llm"))).post("/api/check", json={"text": SCAM})
+    assert r.status_code == 200
+    assert r.json()["engine"] == "llm" and r.json()["notice"] == FALLBACK_NOTICE
+
+
+def test_explicitly_chosen_local_engine_has_no_fallback_notice():
+    engine = FakeEngine(answers(0.93))
+    engine.name = "nli"
+    c = TestClient(make_app(provider=FakeProvider(engine, name="nli")))
+    r = c.post("/api/check", json={"text": SCAM, "engine": "nli"})
+    assert r.status_code == 200 and r.json()["notice"] is None
+
+
+def test_jev_check_has_no_notice():
+    r = client_with(FakeEngine(answers(0.93))).post("/api/check", json={"text": SCAM})
+    assert r.json()["notice"] is None
+
+
+def test_requested_engine_not_ready_is_503_naming_it():
+    r = TestClient(make_app()).post("/api/check", json={"text": SCAM, "engine": "llm"})
+    assert r.status_code == 503
+    assert "'llm' engine isn't ready" in r.json()["detail"] and "weights download llm" in r.json()["detail"]
+
+
+def test_default_preference_order(monkeypatch):
+    monkeypatch.setattr("second_look.engines.registry.is_cached", lambda repo, rev: True)
+    assert EngineProvider(Settings()).default_name() == "llm"
+    assert EngineProvider(Settings(typesafe_api_key="test-key-not-real")).default_name() == "jev"
+    monkeypatch.setattr("second_look.engines.registry.is_cached", lambda repo, rev: "deberta" in repo.lower())
+    assert EngineProvider(Settings()).default_name() == "nli"
+
+
+def test_provider_builds_local_engine_once(monkeypatch):
+    from second_look.engines import registry
+
+    built = []
+    monkeypatch.setattr("second_look.engines.registry.is_cached", lambda repo, rev: True)
+    monkeypatch.setitem(registry.BUILDERS, "llm", lambda s: built.append(1) or FakeEngine({}, name="llm"))
+    p = EngineProvider(Settings())
+    assert p.get() is p.get("llm")
+    assert built == [1]

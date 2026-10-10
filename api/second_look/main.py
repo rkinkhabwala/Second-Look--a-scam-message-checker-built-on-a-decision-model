@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from second_look.config import Settings, get_settings
 from second_look.engines.base import EngineError, EngineUnavailable
-from second_look.engines.registry import DEFAULT_ENGINE, EngineProvider, UnknownEngine
+from second_look.engines.registry import LOCAL_ENGINES, EngineProvider, UnknownEngine
 from second_look.preprocess import Channel, build_state, state_token_budget
 from second_look.questions import QUESTIONS
 from second_look.storage import Storage, TrueLabel
@@ -21,9 +21,10 @@ from second_look.verdict import Verdict, make_verdict
 log = logging.getLogger("second_look")
 
 NO_ENGINE_MESSAGE = (
-    "No decision engine is configured. Set TYPESAFE_API_KEY (see .env.example) to use Jev; "
-    "local engines arrive in a later release."
+    "No decision engine is ready. Set TYPESAFE_API_KEY (see .env.example) to use Jev, or download a "
+    "local model with: python -m second_look.engines.weights download llm"
 )
+FALLBACK_NOTICE = "Jev isn't configured, so this check used a local engine that runs on this computer."
 ENGINE_FAILED_MESSAGE = "The decision engine didn't respond properly. Please try again in a moment."
 SCREENSHOTS_LATER_MESSAGE = "Screenshot checks aren't available yet. Please paste the message text instead."
 
@@ -40,6 +41,7 @@ class CheckRequest(BaseModel):
 class CheckResponse(Verdict):
     check_id: int
     engine: str
+    notice: str | None = None  # set when the check fell back to a local engine
     latency_ms: float
     truncated: bool
 
@@ -77,7 +79,7 @@ def create_app(
 
     @app.get("/api/engines")
     def engines(p: EngineProvider = Depends(get_provider)) -> dict:
-        return {"default": DEFAULT_ENGINE, "engines": [s.__dict__ for s in p.status()]}
+        return {"default": p.default_name(), "engines": [s.__dict__ for s in p.status()]}
 
     @app.post("/api/check", response_model=CheckResponse)
     async def check(req: CheckRequest, p: EngineProvider = Depends(get_provider)) -> CheckResponse:
@@ -89,8 +91,11 @@ def create_app(
             engine = p.get(req.engine)
         except UnknownEngine:
             raise HTTPException(400, f"Unknown engine '{req.engine}'.") from None
-        except EngineUnavailable:
+        except EngineUnavailable as exc:
+            if req.engine:
+                raise HTTPException(503, f"The '{req.engine}' engine isn't ready: {exc}.") from None
             raise HTTPException(503, NO_ENGINE_MESSAGE) from None
+        fell_back = req.engine is None and engine.name in LOCAL_ENGINES
 
         budget = state_token_budget(
             {k: q.model_dump() for k, q in QUESTIONS.items()},
@@ -132,6 +137,7 @@ def create_app(
             engine=engine.name,
             latency_ms=round(latency_ms, 1),
             truncated=truncated,
+            notice=FALLBACK_NOTICE if fell_back else None,
         )
 
     @app.post("/api/checks/{check_id}/feedback", status_code=201)

@@ -12,3 +12,9 @@ def respx_router():
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_local_weights(monkeypatch):
+    """Tests see an empty model cache unless they say otherwise, whatever this machine has downloaded."""
+    monkeypatch.setattr("second_look.engines.registry.is_cached", lambda repo, rev: False)
