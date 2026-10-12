@@ -19,8 +19,11 @@ from second_look.engines.base import Answer, Choice, EngineResult, Noul, Questio
 from second_look.engines.llm_scoring import softmax
 from second_look.engines.render import render_state
 
-PROMPT_VERSION = "nli-v1"
-MAX_MESSAGE_CHARS = 1_400  # ~350 DeBERTa tokens, leaving room for features + hypothesis in 512
+PROMPT_VERSION = "nli-v2"  # v2: premise cut to 600 chars
+# Each of the ~35 hypotheses re-reads the premise, so premise length drives speed: at 1,400 chars
+# long emails took ~14 s per check on an M1 Pro. 600 chars (~150 tokens) keeps the opening and the
+# call to action (middle-truncated) for a fraction of the cost.
+MAX_MESSAGE_CHARS = 600
 
 
 def middle_truncate_chars(text: str, max_chars: int) -> tuple[str, bool]:

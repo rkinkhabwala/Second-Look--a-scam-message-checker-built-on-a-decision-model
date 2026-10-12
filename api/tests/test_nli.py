@@ -87,5 +87,5 @@ async def test_long_message_truncated_and_reported():
 def test_payload_includes_model_and_prompt_version():
     state, _ = build_state("hi")
     payload, truncated = NLIEngine(FakeNLI()).build_payload(state, QUESTIONS)
-    assert payload["model"] == "fake/nli@deadbeef" and payload["prompt_version"] == "nli-v1"
+    assert payload["model"] == "fake/nli@deadbeef" and payload["prompt_version"] == "nli-v2"
     assert not truncated

@@ -102,7 +102,7 @@ class HFOptionScorer:
 class HFNLIScorer:
     """DeBERTa-v3 zero-shot cross-encoder. Runs in fp32: DeBERTa-v3 is unstable in half precision."""
 
-    def __init__(self, repo_id: str, revision: str, device: str | None = None, batch_size: int = 16):
+    def __init__(self, repo_id: str, revision: str, device: str | None = None, batch_size: int = 40):
         from transformers import AutoModelForSequenceClassification  # noqa: F401  (import check)
 
         self.model_id = f"{repo_id}@{revision[:8]}"
