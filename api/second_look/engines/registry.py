@@ -61,7 +61,7 @@ def _build_nli(settings: Settings) -> DecisionEngine:
     from second_look.engines.hf_scorer import HFNLIScorer
     from second_look.engines.nli import NLIEngine
 
-    return with_calibration(NLIEngine(HFNLIScorer(settings.nli_model, settings.nli_revision, settings.device)))
+    return with_calibration(NLIEngine(HFNLIScorer(settings.nli_model, settings.nli_revision, settings.nli_device)))
 
 
 BUILDERS: dict[str, Callable[[Settings], DecisionEngine]] = {

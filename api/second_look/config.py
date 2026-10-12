@@ -51,7 +51,10 @@ class Settings:
     llm_revision: str = "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e"
     nli_model: str = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0-c"
     nli_revision: str = "b2730f16019076bb0009481121efbe4705e0e378"
-    device: str | None = None  # None = auto (mps > cuda > cpu)
+    device: str | None = None  # None = auto (mps > cuda > cpu); used by the LLM engine
+    # NLI runs on CPU by default: on an M1 Pro, DeBERTa-v3 on MPS was no faster than CPU for emails
+    # (5.7-13 s vs 5.0-6.5 s per check) and twice hung inside an MPS GPU sync.
+    nli_device: str = "cpu"
 
     # Per-engine verdict thresholds, set from each engine's sweep (eval/results/*-sweep.json).
     # Engines not listed use the defaults above.
@@ -84,5 +87,6 @@ def get_settings() -> Settings:
         nli_model=os.environ.get("SL_NLI_MODEL", d.nli_model),
         nli_revision=os.environ.get("SL_NLI_REVISION", d.nli_revision),
         device=os.environ.get("SL_DEVICE") or None,
+        nli_device=os.environ.get("SL_NLI_DEVICE", d.nli_device),
         db_url=os.environ.get("SL_DB_URL", d.db_url),
     )

@@ -45,3 +45,11 @@ def test_is_cached_needs_config_and_weights(monkeypatch):
 
 def test_download_excludes_pickles_and_onnx():
     assert not any(p.endswith((".bin", ".onnx")) or "onnx" in p for p in weights.ALLOW_PATTERNS)
+
+
+def test_nli_defaults_to_cpu(monkeypatch):
+    monkeypatch.setenv("SL_NLI_DEVICE", "mps")
+    from second_look.config import get_settings
+
+    assert Settings().nli_device == "cpu"
+    assert get_settings().nli_device == "mps"
