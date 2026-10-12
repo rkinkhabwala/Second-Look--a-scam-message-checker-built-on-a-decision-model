@@ -432,7 +432,8 @@ def main(
         f"  acc@90% cov    {fmt(s['accuracy_at_90_coverage'], '.4f')}\n"
         f"  latency p50/95 {fmt(summary['latency_ms']['p50'], '.0f')} / {fmt(summary['latency_ms']['p95'], '.0f')} ms\n"
         f"  cost / 1k      ${fmt(summary['cost_per_1000_checks']['usd'], '.4f')}\n"
-        + (f"  calibration    T={summary['calibration']['temperatures']} | ECE before "
+        + (f"  calibration    T={summary['calibration']['temperatures']} shift={summary['calibration']['shifts']}"
+           f" | ECE before "
            f"{fmt(summary['uncalibrated']['is_scam']['ece_10_bins'], '.4f')} -> after {fmt(s['ece_10_bins'], '.4f')}\n"
            if cal is not None else "") +
         f"Wrote {paths['json']}"

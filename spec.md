@@ -125,6 +125,7 @@ class DecisionEngine(Protocol):
 **NLI engine:** each option becomes a hypothesis ("This message is a package-delivery scam."); entailment scores → softmax across options. Fastest, weakest; it's the baseline.
 
 **Calibration:** raw probabilities from the open-source engines are not calibrated out of the box. Fit one temperature per question on a validation split and apply it at inference. Jev is used as-is (it is sold as calibrated — the eval harness checks that claim rather than assuming it).
+  - *Amended 2026-10-12:* `noul` questions use **Platt scaling** (`sigmoid(z/T + shift)`): a temperature plus one shift per question. On 400 held-out SMS messages (calibration split, outside the fit subset), temperature alone made Qwen3-1.7B's ECE worse (0.180 → 0.207, 35 false alarms unchanged) because the model leans towards "yes"; temperature + shift gave ECE 0.059 and accuracy 0.960 (from 0.820). `choice` and `score` questions keep plain temperature scaling.
 
 ---
 

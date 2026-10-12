@@ -1,3 +1,4 @@
+import json
 import math
 
 import numpy as np
@@ -10,6 +11,7 @@ from second_look.calibration import (
     apply_temperature,
     binary_logit,
     fit_calibration,
+    fit_platt_binary,
     fit_temperature_binary,
     fit_temperature_multiclass,
 )
@@ -96,8 +98,9 @@ def test_fit_calibration_only_fits_labeled_questions():
     answers = [{"is_scam": llm_answer(PROMPTS["is_scam"], [zi, 0.0]),
                 "urgency": llm_answer(PROMPTS["urgency"], [zi, 0.0])} for zi in z]
     cal = fit_calibration("llm", "m@1", "llm-v1", answers, {"is_scam": list(y), "scam_type": [None] * 200}, QUESTIONS)
-    assert set(cal.temperatures) == {"is_scam"}
+    assert set(cal.temperatures) == {"is_scam"} and set(cal.shifts) == {"is_scam"}
     assert cal.temperatures["is_scam"] == pytest.approx(2.0, rel=0.4)
+    assert abs(cal.shifts["is_scam"]) < 0.5  # unbiased synthetic data: no shift needed
     assert cal.fit_on == {"examples_per_question": {"is_scam": 200}}
 
 
@@ -149,3 +152,35 @@ def test_registry_wraps_only_matching_calibration(monkeypatch, tmp_path):
     assert isinstance(with_calibration(inner), CalibratedEngine)
     Calibration("llm", "different@9", None, {"is_scam": 2.0}).save(tmp_path)
     assert with_calibration(inner) is inner  # fit on another model: ignored
+
+
+def test_platt_recovers_temperature_and_shift():
+    rng = np.random.default_rng(3)
+    z = rng.normal(0, 5, 6000)
+    y = (rng.uniform(size=6000) < 1 / (1 + np.exp(-(z / 2.0 - 1.5)))).astype(int)  # leans "yes" by 1.5
+    t, shift = fit_platt_binary(z, y)
+    assert t == pytest.approx(2.0, rel=0.15) and shift == pytest.approx(-1.5, abs=0.25)
+
+
+def test_platt_beats_temperature_on_biased_model():
+    rng = np.random.default_rng(4)
+    z = rng.normal(2, 4, 4000)  # model says "yes" too readily
+    y = (rng.uniform(size=4000) < 1 / (1 + np.exp(-(z / 3.0 - 2.5)))).astype(int)
+    t_only = fit_temperature_binary(z, y)
+    t, shift = fit_platt_binary(z, y)
+    p_temp = 1 / (1 + np.exp(-z / t_only))
+    p_platt = 1 / (1 + np.exp(-(z / t + shift)))
+    assert ece(y, p_platt) < ece(y, p_temp)
+
+
+def test_apply_shift_only_to_noul():
+    a = llm_answer(PROMPTS["is_scam"], [0.0, 0.0])  # raw P = 0.5
+    cal = apply_temperature(a, QUESTIONS["is_scam"], 1.0, shift=-2.0)
+    assert cal.value == pytest.approx(sigmoid(-2.0)) and cal.raw["shift"] == -2.0
+
+
+def test_old_calibration_files_without_shifts_still_load(tmp_path):
+    (tmp_path / "llm.json").write_text(json.dumps(
+        {"engine": "llm", "model": "m", "prompt_version": None, "temperatures": {"is_scam": 2.0}, "fit_on": {}}))
+    cal = Calibration.load("llm", tmp_path)
+    assert cal.shifts == {}

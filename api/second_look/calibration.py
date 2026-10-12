@@ -1,9 +1,10 @@
-"""Temperature scaling for local engines (spec §5).
+"""Calibration for local engines (spec §5, amended 2026-10-12).
 
-One temperature T per question, fit on a held-out split by minimising
-negative log-likelihood, then applied at inference:
-- noul: p = sigmoid(z / T), where z is the yes-vs-no logit
-- choice / score: probabilities = softmax(logits / T)
+Fit on a held-out split by minimising negative log-likelihood, applied at inference:
+- noul: Platt scaling, p = sigmoid(z / T + shift), where z is the yes-vs-no logit.
+  A temperature alone can't fix a model that leans towards "yes": on held-out
+  SMS it made Qwen3-1.7B's ECE worse (0.180 -> 0.207), while T + shift gave 0.059.
+- choice / score: temperature scaling, probabilities = softmax(logits / T)
 
 Only questions with labels can be fit (is_scam everywhere; scam_type where a
 dataset labels it). Others keep T = 1. Jev is used as-is.
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import minimize_scalar
+from scipy.optimize import minimize, minimize_scalar
 
 from second_look.engines.base import Answer, Choice, EngineResult, Noul, Question
 from second_look.engines.llm_scoring import softmax
@@ -63,6 +64,18 @@ def fit_temperature_binary(z: list[float] | np.ndarray, y: list[int] | np.ndarra
     return float(math.exp(res.x))
 
 
+def fit_platt_binary(z: list[float] | np.ndarray, y: list[int] | np.ndarray) -> tuple[float, float]:
+    """(T, shift) minimising NLL of sigmoid(z / T + shift)."""
+    z, y = np.asarray(z, float), np.asarray(y, float)
+
+    def nll(params: np.ndarray) -> float:
+        s = z / math.exp(params[0]) + params[1]
+        return float(np.mean(np.logaddexp(0, -s) * y + np.logaddexp(0, s) * (1 - y)))
+
+    res = minimize(nll, x0=[0.0, 0.0], method="L-BFGS-B", bounds=[LOG_T_BOUNDS, (-20.0, 20.0)])
+    return float(math.exp(res.x[0])), float(res.x[1])
+
+
 def fit_temperature_multiclass(logits: list[list[float]] | np.ndarray, y: list[int] | np.ndarray) -> float:
     logits, y = np.asarray(logits, float), np.asarray(y, int)
     res = minimize_scalar(_nll_multiclass, bounds=LOG_T_BOUNDS, args=(logits, y), method="bounded")
@@ -72,13 +85,14 @@ def fit_temperature_multiclass(logits: list[list[float]] | np.ndarray, y: list[i
 # ---------------------------------------------------------------- applying
 
 
-def apply_temperature(answer: Answer, question: Question, t: float) -> Answer:
+def apply_temperature(answer: Answer, question: Question, t: float, shift: float = 0.0) -> Answer:
+    """Rescale (and for noul, shift) an answer's raw logits. Answers without logits pass through."""
     logits = answer_logits(answer)
-    if logits is None or t == 1.0:
+    if logits is None or (t == 1.0 and shift == 0.0):
         return answer
-    raw = {**(answer.raw or {}), "temperature": t}
+    raw = {**(answer.raw or {}), "temperature": t, **({"shift": shift} if shift else {})}
     if isinstance(question, Noul):
-        p = sigmoid(binary_logit(logits) / t)
+        p = sigmoid(binary_logit(logits) / t + shift)
         return Answer(type="noul", value=p, probabilities={"true": p, "false": 1 - p},
                       confidence=abs(2 * p - 1), raw=raw)
     probs = softmax([x / t for x in logits])
@@ -99,10 +113,12 @@ class Calibration:
     prompt_version: str | None
     temperatures: dict[str, float]
     fit_on: dict = field(default_factory=dict)
+    shifts: dict[str, float] = field(default_factory=dict)  # noul questions only (Platt scaling)
 
     def apply(self, answers: dict[str, Answer], questions: dict[str, Question]) -> dict[str, Answer]:
         return {
-            k: apply_temperature(a, questions[k], self.temperatures[k]) if k in self.temperatures else a
+            k: apply_temperature(a, questions[k], self.temperatures[k], self.shifts.get(k, 0.0))
+            if k in self.temperatures else a
             for k, a in answers.items()
         }
 
@@ -133,12 +149,13 @@ def fit_calibration(
     *,
     min_examples: int = 30,
 ) -> Calibration:
-    """Fit T for every question with enough labels.
+    """Fit T (plus a shift for noul) for every question with enough labels.
 
     `labels[key][i]` is the true label for answers[i]: 0/1 for noul, an option key
     for choice, or None when that example has no label for that question.
     """
     temps: dict[str, float] = {}
+    shifts: dict[str, float] = {}
     counts: dict[str, int] = {}
     for key, ys in labels.items():
         q = questions[key]
@@ -147,12 +164,14 @@ def fit_calibration(
         if len(rows) < min_examples:
             continue
         if isinstance(q, Noul):
-            temps[key] = fit_temperature_binary([binary_logit(lg) for lg, _ in rows], [int(y) for _, y in rows])
+            temps[key], shifts[key] = fit_platt_binary(
+                [binary_logit(lg) for lg, _ in rows], [int(y) for _, y in rows]
+            )
         else:
             options = list(q.criteria) if isinstance(q, Choice) else [str(i) for i in range(len(q.criteria))]
             temps[key] = fit_temperature_multiclass([lg for lg, _ in rows], [options.index(y) for _, y in rows])
         counts[key] = len(rows)
-    return Calibration(engine, model, prompt_version, temps, {"examples_per_question": counts})
+    return Calibration(engine, model, prompt_version, temps, {"examples_per_question": counts}, shifts)
 
 
 class CalibratedEngine:
