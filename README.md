@@ -2,7 +2,7 @@
 
 Paste a suspicious text, email or DM and get back how likely it is to be a scam, what kind,
 which red flags are present, and what to do next. Decisions come from TypeSafe's **Jev**
-decision model (open-source engines arrive in Phase 2). See [spec.md](spec.md) and [PLAN.md](PLAN.md).
+decision model, or from open-source engines that run locally. New here? Start with [PROJECT.md](PROJECT.md); details are in [spec.md](spec.md) and [PLAN.md](PLAN.md).
 
 ## How to run
 
